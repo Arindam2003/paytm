@@ -4,75 +4,88 @@ const { User } = require('../Schema/user.schema');
 const jwt = require('jsonwebtoken');
 const { authMiddleware } = require('../middleware/authMiddleware');
 const router = express.Router();
-const {Account} = require('../Schema/account.schema')
+const { Account } = require('../Schema/account.schema')
 const bcrypt = require('bcryptjs')
+const mongoose=require('mongoose');
 
 const signupBody = zod.object({
-    username: zod.string().email(),
-    password: zod.string().min(6),
     firstname: zod.string(),
-    lastname: zod.string()
+    lastname: zod.string(),
+    username: zod.string().email(),
+    password: zod.string().min(6)
 })
-router.post('/signup', async (req, res) => {
+router.post("/signup", async (req, res) => {
     const body = req.body;
     const { success } = signupBody.safeParse(body);
 
     if (!success) {
         return res.status(400).json({
-            message: "Invaid input"
-        })
+            message: "Invalid input"
+        });
     }
-    else {
-        try {
-            const user = await User.findOne({
-                username: body.username
-            })
 
-            if (user) {
-                return res.status(409).json({
-                    message: "Email already exist"
-                })
-            }
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-            const hash = await bcrypt.hash(req.body.password, 10);
+    try {
+        const existingUser = await User.findOne(
+            { username: body.username }
+        ).session(session);
 
-            const newUser = await User.create({
+        if (existingUser) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(409).json({
+                message: "Email already exists"
+            });
+        }
+
+        const hash = await bcrypt.hash(body.password, 10);
+        const initialAmount = Math.round(1 + Math.random() * 10000);
+
+        const [newUser] = await User.create(
+            [{
                 username: body.username,
                 password: hash,
                 firstname: body.firstname,
                 lastname: body.lastname
-            });
+            }],
+            { session }
+        );
 
-            const userId = newUser._id;
-            const initialAmount = Math.round(1 + Math.random() * 10000);
+        await Account.create(
+            [{
+                userId: newUser._id,
+                balance: initialAmount,
+                username: newUser.username,
+            }],
+            { session }
+        );
 
-            await Account.create({
-                userId,
-                balance: initialAmount
-            });
+        await session.commitTransaction();
+        session.endSession();
 
-            if (!process.env.JWT_SECRET) {
-                throw new Error("JWT_SECRET not set");
-            }
+        const token = jwt.sign(
+            { userId: newUser._id },
+            process.env.JWT_SECRET
+        );
 
+        res.json({
+            message: "Signup successful",
+            token,
+            initialAmount
+        });
 
-            const token = jwt.sign({
-                userId: newUser._id
-            }, process.env.JWT_SECRET)
+    } catch (err) {
+        await session.abortTransaction();
+        session.endSession();
 
-            res.json({
-                message: "User created Successfully",
-                token: token,
-                initialAmount: initialAmount
-            })
-        } catch (err) {
-            console.log(err);
-            res.status(500).json({
-                msg: "Internal Server error"
-            });
-        }
+        console.error(err);
+        res.status(500).json({
+            message: "Signup failed"
+        });
     }
-})
+});
 
 const signinBody = zod.object({
     username: zod.string().email(),
@@ -165,7 +178,7 @@ router.put("/update", authMiddleware, async (req, res) => {
     }
 })
 
-router.get("/people", authMiddleware,async (req, res) => {
+router.get("/people", authMiddleware, async (req, res) => {
     const filter = req.query.filter || "";
     const regex = new RegExp(filter, "i");
 
@@ -185,6 +198,29 @@ router.get("/people", authMiddleware,async (req, res) => {
         }))
     })
 })
+
+router.get("/me", authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findById(req.userId).select(
+            "username firstname lastname"
+        );
+
+        if (!user) {
+            return res.status(404).json({
+                message: "User not found"
+            });
+        }
+
+        res.json({
+            user
+        });
+    } catch (err) {
+        res.status(500).json({
+            message: "Server error"
+        });
+    }
+});
+
 
 
 module.exports = router;

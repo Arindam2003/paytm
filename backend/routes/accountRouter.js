@@ -6,6 +6,7 @@ const { User } = require('../Schema/user.schema');
 const router = express.Router();
 
 router.get('/balance', authMiddleware, async (req, res) => {
+    try {
     const account = await Account.findOne({userId: req.userId});
     
     if (!account) {
@@ -15,6 +16,11 @@ router.get('/balance', authMiddleware, async (req, res) => {
     res.json({
         balance: account.balance
     })
+    } catch (err) {
+        res.status(500).json({
+            message: "Server error"
+        });
+    }
 })
 
 router.post('/transfer', authMiddleware, async (req, res) => {
